@@ -13,6 +13,7 @@
 (define-data-var last-license-id uint u0)
 (define-data-var contract-owner principal tx-sender)
 (define-data-var platform-fee uint u250)
+(define-data-var pricing-window uint u1440)
 
 (define-map ai-models
   uint
@@ -24,7 +25,11 @@
     total-inferences: uint,
     is-active: bool,
     metadata-uri: (string-ascii 256),
-    audit-score: uint
+    audit-score: uint,
+    base-price: uint,
+    min-price: uint,
+    max-price: uint,
+    last-price-update: uint
   }
 )
 
@@ -75,6 +80,14 @@
   }
 )
 
+(define-map model-usage-stats
+  {model-id: uint, window-start: uint}
+  {
+    usage-count: uint,
+    window-end: uint
+  }
+)
+
 (define-constant ERR-NOT-AUTHORIZED (err u401))
 (define-constant ERR-MODEL-NOT-FOUND (err u404))
 (define-constant ERR-INSUFFICIENT-FUNDS (err u402))
@@ -102,11 +115,15 @@
   (description (string-ascii 256))
   (price-per-inference uint)
   (metadata-uri (string-ascii 256))
+  (min-price uint)
+  (max-price uint)
 )
   (let
     (
       (model-id (get-next-model-id))
     )
+    (asserts! (<= min-price price-per-inference) ERR-INVALID-AMOUNT)
+    (asserts! (<= price-per-inference max-price) ERR-INVALID-AMOUNT)
     (map-set ai-models model-id
       {
         name: name,
@@ -116,7 +133,11 @@
         total-inferences: u0,
         is-active: true,
         metadata-uri: metadata-uri,
-        audit-score: u0
+        audit-score: u0,
+        base-price: price-per-inference,
+        min-price: min-price,
+        max-price: max-price,
+        last-price-update: stacks-block-height
       }
     )
     (ok model-id)
@@ -182,6 +203,7 @@
     (map-set ai-models model-id
       (merge model {total-inferences: (+ (get total-inferences model) u1)})
     )
+    (unwrap-panic (update-usage-stats model-id))
     (ok true)
   )
 )
@@ -248,6 +270,7 @@
         voting-power: voting-power
       }
     )
+    (try! (update-dynamic-pricing model-id))
     (ok true)
   )
 )
@@ -310,5 +333,131 @@
     (try! (nft-transfer? ai-model-license token-id sender recipient))
     (map-set model-licenses token-id (merge license {licensee: recipient}))
     (ok true)
+  )
+)
+
+(define-private (get-window-start (current-block uint))
+  (let
+    (
+      (window-size (var-get pricing-window))
+    )
+    (- current-block (mod current-block window-size))
+  )
+)
+
+(define-private (update-usage-stats (model-id uint))
+  (let
+    (
+      (current-block stacks-block-height)
+      (window-start (get-window-start current-block))
+      (window-end (+ window-start (var-get pricing-window)))
+      (current-stats (map-get? model-usage-stats {model-id: model-id, window-start: window-start}))
+    )
+    (match current-stats
+      stats (map-set model-usage-stats {model-id: model-id, window-start: window-start}
+        {
+          usage-count: (+ (get usage-count stats) u1),
+          window-end: window-end
+        })
+      (map-set model-usage-stats {model-id: model-id, window-start: window-start}
+        {
+          usage-count: u1,
+          window-end: window-end
+        })
+    )
+    (ok true)
+  )
+)
+
+(define-private (calculate-demand-multiplier (usage-count uint))
+  (if (<= usage-count u10)
+    u80
+    (if (<= usage-count u50)
+      u90
+      (if (<= usage-count u100)
+        u100
+        (if (<= usage-count u200)
+          u110
+          (if (<= usage-count u500)
+            u120
+            (if (<= usage-count u1000)
+              u150
+              u200
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+(define-private (update-dynamic-pricing (model-id uint))
+  (let
+    (
+      (model (unwrap! (map-get? ai-models model-id) ERR-MODEL-NOT-FOUND))
+      (current-block stacks-block-height)
+      (window-start (get-window-start current-block))
+      (usage-stats (map-get? model-usage-stats {model-id: model-id, window-start: window-start}))
+      (usage-count (match usage-stats stats (get usage-count stats) u0))
+      (demand-multiplier (calculate-demand-multiplier usage-count))
+      (base-price (get base-price model))
+      (new-price (/ (* base-price demand-multiplier) u100))
+      (min-price (get min-price model))
+      (max-price (get max-price model))
+      (final-price (if (< new-price min-price) 
+                      min-price 
+                      (if (> new-price max-price) 
+                          max-price 
+                          new-price)))
+    )
+    (map-set ai-models model-id
+      (merge model 
+        {
+          price-per-inference: final-price,
+          last-price-update: current-block
+        }
+      )
+    )
+    (ok final-price)
+  )
+)
+
+(define-public (manual-price-update (model-id uint))
+  (let
+    (
+      (model (unwrap! (map-get? ai-models model-id) ERR-MODEL-NOT-FOUND))
+    )
+    (asserts! (is-eq (get owner model) tx-sender) ERR-NOT-OWNER)
+    (update-dynamic-pricing model-id)
+  )
+)
+
+(define-read-only (get-current-price (model-id uint))
+  (match (map-get? ai-models model-id)
+    model (ok (get price-per-inference model))
+    ERR-MODEL-NOT-FOUND
+  )
+)
+
+(define-read-only (get-usage-stats (model-id uint))
+  (let
+    (
+      (current-block stacks-block-height)
+      (window-start (get-window-start current-block))
+    )
+    (map-get? model-usage-stats {model-id: model-id, window-start: window-start})
+  )
+)
+
+(define-read-only (get-pricing-info (model-id uint))
+  (match (map-get? ai-models model-id)
+    model (ok {
+      current-price: (get price-per-inference model),
+      base-price: (get base-price model),
+      min-price: (get min-price model),
+      max-price: (get max-price model),
+      last-update: (get last-price-update model)
+    })
+    ERR-MODEL-NOT-FOUND
   )
 )

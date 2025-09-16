@@ -181,6 +181,33 @@
       }
     )
     (ok license-id)
+)
+  )
+(define-public (extend-license (license-id uint) (additional-inferences uint) (payment uint))
+  (let
+    (
+      (license (unwrap! (map-get? model-licenses license-id) ERR-MODEL-NOT-FOUND))
+      (model-id (get model-id license))
+      (model (unwrap! (map-get? ai-models model-id) ERR-MODEL-NOT-FOUND))
+      (total-cost (* (get price-per-inference model) additional-inferences))
+      (platform-cut (/ (* total-cost (var-get platform-fee)) u10000))
+      (model-owner-cut (- total-cost platform-cut))
+      (user-balance (default-to u0 (map-get? user-balances tx-sender)))
+    )
+    (asserts! (is-eq (get licensee license) tx-sender) ERR-NOT-AUTHORIZED)
+    (asserts! (get is-active license) ERR-LICENSE-EXPIRED)
+    (asserts! (< stacks-block-height (get expires-at license)) ERR-LICENSE-EXPIRED)
+    (asserts! (>= payment total-cost) ERR-INSUFFICIENT-FUNDS)
+    (asserts! (>= user-balance payment) ERR-INSUFFICIENT-FUNDS)
+    (map-set user-balances tx-sender (- user-balance payment))
+    (map-set user-balances (get owner model) 
+      (+ (default-to u0 (map-get? user-balances (get owner model))) model-owner-cut))
+    (map-set user-balances (var-get contract-owner)
+      (+ (default-to u0 (map-get? user-balances (var-get contract-owner))) platform-cut))
+    (map-set model-licenses license-id
+      (merge license {inferences-purchased: (+ (get inferences-purchased license) additional-inferences)})
+    )
+    (ok true)
   )
 )
 

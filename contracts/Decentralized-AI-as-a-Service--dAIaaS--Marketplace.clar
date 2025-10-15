@@ -88,6 +88,15 @@
   }
 )
 
+(define-map model-feedback
+  {model-id: uint, user: principal}
+  {
+    rating: uint,
+    comment: (string-ascii 256),
+    submitted-at: uint
+  }
+)
+
 (define-constant ERR-NOT-AUTHORIZED (err u401))
 (define-constant ERR-MODEL-NOT-FOUND (err u404))
 (define-constant ERR-INSUFFICIENT-FUNDS (err u402))
@@ -486,5 +495,45 @@
       last-update: (get last-price-update model)
     })
     ERR-MODEL-NOT-FOUND
+  )
+)
+
+(define-public (submit-feedback
+  (model-id uint)
+  (rating uint)
+  (comment (string-ascii 256))
+)
+  (let
+    (
+      (model (unwrap! (map-get? ai-models model-id) ERR-MODEL-NOT-FOUND))
+    )
+    (asserts! (<= rating u5) ERR-INVALID-AMOUNT)
+    (asserts! (is-some (map-get? user-balances tx-sender)) ERR-NOT-AUTHORIZED)
+    (map-set model-feedback {model-id: model-id, user: tx-sender}
+      {
+        rating: rating,
+        comment: comment,
+        submitted-at: stacks-block-height
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-feedback (model-id uint) (user principal))
+  (map-get? model-feedback {model-id: model-id, user: user})
+)
+
+(define-read-only (get-average-rating (model-id uint))
+  (let
+    (
+      (feedbacks (list))
+      (total-rating u0)
+      (count u0)
+    )
+    (ok {
+      average-rating: (if (> count u0) (/ total-rating count) u0),
+      total-feedbacks: count
+    })
   )
 )

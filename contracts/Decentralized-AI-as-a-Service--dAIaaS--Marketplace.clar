@@ -97,6 +97,23 @@
   }
 )
 
+(define-map user-reputation
+  principal
+  uint
+)
+
+(define-map user-stakes
+  principal
+  {
+    staked-amount: uint,
+    staked-at: uint
+  }
+)
+
+(define-data-var total-staked uint u0)
+(define-data-var total-fees-collected uint u0)
+(define-data-var referral-reward-percentage uint u500)
+
 (define-constant ERR-NOT-AUTHORIZED (err u401))
 (define-constant ERR-MODEL-NOT-FOUND (err u404))
 (define-constant ERR-INSUFFICIENT-FUNDS (err u402))
@@ -172,11 +189,13 @@
     (asserts! (>= user-balance payment) ERR-INSUFFICIENT-FUNDS)
     
     (map-set user-balances tx-sender (- user-balance payment))
-    (map-set user-balances (get owner model) 
+    (map-set user-balances (get owner model)
       (+ (default-to u0 (map-get? user-balances (get owner model))) model-owner-cut))
     (map-set user-balances (var-get contract-owner)
       (+ (default-to u0 (map-get? user-balances (var-get contract-owner))) platform-cut))
-    
+
+    (distribute-staking-rewards platform-cut)
+
     (try! (nft-mint? ai-model-license license-id tx-sender))
     
     (map-set model-licenses license-id
@@ -209,10 +228,11 @@
     (asserts! (>= payment total-cost) ERR-INSUFFICIENT-FUNDS)
     (asserts! (>= user-balance payment) ERR-INSUFFICIENT-FUNDS)
     (map-set user-balances tx-sender (- user-balance payment))
-    (map-set user-balances (get owner model) 
+    (map-set user-balances (get owner model)
       (+ (default-to u0 (map-get? user-balances (get owner model))) model-owner-cut))
     (map-set user-balances (var-get contract-owner)
       (+ (default-to u0 (map-get? user-balances (var-get contract-owner))) platform-cut))
+    (distribute-staking-rewards platform-cut)
     (map-set model-licenses license-id
       (merge license {inferences-purchased: (+ (get inferences-purchased license) additional-inferences)})
     )
@@ -244,7 +264,7 @@
   )
 )
 
-(define-public (audit-model 
+(define-public (audit-model
   (model-id uint)
   (score uint)
   (comments (string-ascii 256))
@@ -252,10 +272,11 @@
   (let
     (
       (model (unwrap! (map-get? ai-models model-id) ERR-MODEL-NOT-FOUND))
+      (current-rep (default-to u0 (map-get? user-reputation tx-sender)))
     )
     (asserts! (<= score u100) ERR-INVALID-AMOUNT)
     (asserts! (is-some (map-get? user-balances tx-sender)) ERR-NOT-AUTHORIZED)
-    
+
     (map-set model-audits {model-id: model-id, auditor: tx-sender}
       {
         score: score,
@@ -263,6 +284,7 @@
         comments: comments
       }
     )
+    (map-set user-reputation tx-sender (+ current-rep u2))
     (ok true)
   )
 )
@@ -284,6 +306,45 @@
     (asserts! (>= user-balance amount) ERR-INSUFFICIENT-FUNDS)
     (try! (as-contract (stx-transfer? amount tx-sender tx-sender)))
     (map-set user-balances tx-sender (- user-balance amount))
+    (ok amount)
+  )
+)
+
+(define-public (stake-funds (amount uint))
+  (let
+    (
+      (user-balance (default-to u0 (map-get? user-balances tx-sender)))
+      (current-stake (default-to {staked-amount: u0, staked-at: u0} (map-get? user-stakes tx-sender)))
+      (new-staked-amount (+ (get staked-amount current-stake) amount))
+    )
+    (asserts! (>= user-balance amount) ERR-INSUFFICIENT-FUNDS)
+    (map-set user-balances tx-sender (- user-balance amount))
+    (map-set user-stakes tx-sender
+      {
+        staked-amount: new-staked-amount,
+        staked-at: stacks-block-height
+      }
+    )
+    (var-set total-staked (+ (var-get total-staked) amount))
+    (ok new-staked-amount)
+  )
+)
+
+(define-public (unstake-funds (amount uint))
+  (let
+    (
+      (current-stake (unwrap! (map-get? user-stakes tx-sender) ERR-INSUFFICIENT-FUNDS))
+      (staked-amount (get staked-amount current-stake))
+    )
+    (asserts! (>= staked-amount amount) ERR-INSUFFICIENT-FUNDS)
+    (map-set user-balances tx-sender (+ (default-to u0 (map-get? user-balances tx-sender)) amount))
+    (if (is-eq (- staked-amount amount) u0)
+      (map-delete user-stakes tx-sender)
+      (map-set user-stakes tx-sender
+        (merge current-stake {staked-amount: (- staked-amount amount)})
+      )
+    )
+    (var-set total-staked (- (var-get total-staked) amount))
     (ok amount)
   )
 )
@@ -440,14 +501,14 @@
       (new-price (/ (* base-price demand-multiplier) u100))
       (min-price (get min-price model))
       (max-price (get max-price model))
-      (final-price (if (< new-price min-price) 
-                      min-price 
-                      (if (> new-price max-price) 
-                          max-price 
+      (final-price (if (< new-price min-price)
+                      min-price
+                      (if (> new-price max-price)
+                          max-price
                           new-price)))
     )
     (map-set ai-models model-id
-      (merge model 
+      (merge model
         {
           price-per-inference: final-price,
           last-price-update: current-block
@@ -455,6 +516,24 @@
       )
     )
     (ok final-price)
+  )
+)
+
+(define-private (distribute-staking-rewards (fee-amount uint))
+  (let
+    (
+      (total-staked-amount (var-get total-staked))
+    )
+    (if (> total-staked-amount u0)
+      (let
+        (
+          (reward-per-stake (/ fee-amount total-staked-amount))
+        )
+        (var-set total-fees-collected (+ (var-get total-fees-collected) fee-amount))
+        true
+      )
+      true
+    )
   )
 )
 
@@ -506,6 +585,7 @@
   (let
     (
       (model (unwrap! (map-get? ai-models model-id) ERR-MODEL-NOT-FOUND))
+      (current-rep (default-to u0 (map-get? user-reputation tx-sender)))
     )
     (asserts! (<= rating u5) ERR-INVALID-AMOUNT)
     (asserts! (is-some (map-get? user-balances tx-sender)) ERR-NOT-AUTHORIZED)
@@ -516,6 +596,7 @@
         submitted-at: stacks-block-height
       }
     )
+    (map-set user-reputation tx-sender (+ current-rep u1))
     (ok true)
   )
 )
@@ -536,4 +617,178 @@
       total-feedbacks: count
     })
   )
+)
+
+(define-read-only (get-staking-info (user principal))
+  (map-get? user-stakes user)
+)
+
+(define-read-only (get-total-staked)
+  (var-get total-staked)
+)
+
+(define-read-only (get-total-fees-collected)
+  (var-get total-fees-collected)
+)
+
+(define-data-var last-subscription-id uint u0)
+
+(define-map model-subscriptions
+  uint
+  {
+    model-id: uint,
+    subscriber: principal,
+    start-block: uint,
+    end-block: uint,
+    fee-paid: uint
+  }
+)
+
+(define-data-var last-version-id uint u0)
+
+(define-map model-versions
+  {model-id: uint, version-id: uint}
+  {
+    name: (string-ascii 64),
+    description: (string-ascii 256),
+    metadata-uri: (string-ascii 256),
+    created-at: uint,
+    is-active: bool
+  }
+)
+
+(define-map license-versions
+  uint
+  uint
+)
+
+(define-map user-referrers
+  principal
+  principal
+)
+
+(define-public (set-referrer (referrer principal))
+  (begin
+    (asserts! (not (is-eq tx-sender referrer)) ERR-INVALID-AMOUNT)
+    (asserts! (is-none (map-get? user-referrers tx-sender)) ERR-ALREADY-EXISTS)
+    (map-set user-referrers tx-sender referrer)
+    (ok true)
+  )
+)
+
+(define-read-only (get-referrer (user principal))
+  (map-get? user-referrers user)
+)
+
+(define-private (get-next-subscription-id)
+  (begin
+    (var-set last-subscription-id (+ (var-get last-subscription-id) u1))
+    (var-get last-subscription-id)
+  )
+)
+
+(define-public (subscribe-to-model (model-id uint) (duration-blocks uint) (payment uint))
+  (let
+    (
+      (model (unwrap! (map-get? ai-models model-id) ERR-MODEL-NOT-FOUND))
+      (subscription-fee (* (get price-per-inference model) u1000))
+      (user-balance (default-to u0 (map-get? user-balances tx-sender)))
+      (subscription-id (get-next-subscription-id))
+      (start-block stacks-block-height)
+      (end-block (+ start-block duration-blocks))
+    )
+    (asserts! (get is-active model) ERR-MODEL-NOT-FOUND)
+    (asserts! (>= payment subscription-fee) ERR-INSUFFICIENT-FUNDS)
+    (asserts! (>= user-balance payment) ERR-INSUFFICIENT-FUNDS)
+    (map-set user-balances tx-sender (- user-balance payment))
+    (map-set user-balances (get owner model) (+ (default-to u0 (map-get? user-balances (get owner model))) payment))
+    (map-set model-subscriptions subscription-id
+      {
+        model-id: model-id,
+        subscriber: tx-sender,
+        start-block: start-block,
+        end-block: end-block,
+        fee-paid: payment
+      }
+    )
+    (ok subscription-id)
+  )
+)
+
+(define-read-only (get-subscription (subscription-id uint))
+  (map-get? model-subscriptions subscription-id)
+)
+
+(define-public (use-inference-with-subscription (subscription-id uint))
+  (let
+    (
+      (subscription (unwrap! (map-get? model-subscriptions subscription-id) ERR-MODEL-NOT-FOUND))
+      (model-id (get model-id subscription))
+      (model (unwrap! (map-get? ai-models model-id) ERR-MODEL-NOT-FOUND))
+    )
+    (asserts! (is-eq (get subscriber subscription) tx-sender) ERR-NOT-AUTHORIZED)
+    (asserts! (<= stacks-block-height (get end-block subscription)) ERR-LICENSE-EXPIRED)
+    (asserts! (get is-active model) ERR-MODEL-NOT-FOUND)
+    (map-set ai-models model-id
+      (merge model {total-inferences: (+ (get total-inferences model) u1)})
+    )
+    (unwrap-panic (update-usage-stats model-id))
+    (ok true)
+  )
+)
+
+(define-private (get-next-version-id)
+  (begin
+    (var-set last-version-id (+ (var-get last-version-id) u1))
+    (var-get last-version-id)
+  )
+)
+
+(define-public (register-model-version
+  (model-id uint)
+  (name (string-ascii 64))
+  (description (string-ascii 256))
+  (metadata-uri (string-ascii 256))
+)
+  (let
+    (
+      (model (unwrap! (map-get? ai-models model-id) ERR-MODEL-NOT-FOUND))
+      (version-id (get-next-version-id))
+    )
+    (asserts! (is-eq (get owner model) tx-sender) ERR-NOT-OWNER)
+    (asserts! (get is-active model) ERR-MODEL-NOT-FOUND)
+    (map-set model-versions {model-id: model-id, version-id: version-id}
+      {
+        name: name,
+        description: description,
+        metadata-uri: metadata-uri,
+        created-at: stacks-block-height,
+        is-active: true
+      }
+    )
+    (ok version-id)
+  )
+)
+
+(define-public (upgrade-license-to-version (license-id uint) (version-id uint))
+  (let
+    (
+      (license (unwrap! (map-get? model-licenses license-id) ERR-MODEL-NOT-FOUND))
+      (model-id (get model-id license))
+      (version (unwrap! (map-get? model-versions {model-id: model-id, version-id: version-id}) ERR-MODEL-NOT-FOUND))
+    )
+    (asserts! (is-eq (get licensee license) tx-sender) ERR-NOT-AUTHORIZED)
+    (asserts! (get is-active license) ERR-LICENSE-EXPIRED)
+    (asserts! (get is-active version) ERR-MODEL-NOT-FOUND)
+    (map-set license-versions license-id version-id)
+    (ok true)
+  )
+)
+
+(define-read-only (get-model-version (model-id uint) (version-id uint))
+  (map-get? model-versions {model-id: model-id, version-id: version-id})
+)
+
+(define-read-only (get-license-version (license-id uint))
+  (map-get? license-versions license-id)
 )

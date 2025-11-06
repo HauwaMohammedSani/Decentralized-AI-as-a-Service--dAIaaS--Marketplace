@@ -3,12 +3,13 @@ A blockchain-powered platform for publishing, licensing, and monetizing AI/ML mo
 ## 🚀 Features
 
 - **🏪 Model Marketplace**: Register and discover AI models
-- **🎫 NFT Licensing**: Purchase usage rights as transferable NFTs  
+- **🎫 NFT Licensing**: Purchase usage rights as transferable NFTs
 - **💰 Pay-per-Inference**: Granular metering and billing
 - **📊 Usage Tracking**: On-chain inference monitoring
 - **🔍 Audit System**: Community-driven model validation
 - **🗳️ DAO Governance**: Decentralized quality control
 - **⭐ User Feedback System**: Rate and review AI models
+- **🔄 Model Versioning**: Register new model versions and upgrade licenses seamlessly
 
 ## 📋 Core Functions
 
@@ -85,6 +86,24 @@ clarinet deploy --testnet
   u1        ;; model-id
   u5        ;; rating (1-5)
   "Excellent performance and accuracy"
+)
+```
+
+### 8. Register New Model Version
+```clarity
+(contract-call? .daiaaS-marketplace register-model-version
+  u1        ;; model-id
+  "GPT-Style Model v2.0"
+  "Enhanced language processing with better accuracy"
+  "ipfs://updated-model-metadata-hash"
+)
+```
+
+### 9. Upgrade License to New Version
+```clarity
+(contract-call? .daiaaS-marketplace upgrade-license-to-version
+  u1        ;; license-id
+  u1        ;; version-id
 )
 ```
 

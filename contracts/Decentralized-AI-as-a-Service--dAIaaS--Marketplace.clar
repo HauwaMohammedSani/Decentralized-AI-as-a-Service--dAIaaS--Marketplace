@@ -196,6 +196,14 @@
 
     (distribute-staking-rewards platform-cut)
 
+    (let ((referrer (map-get? user-referrers tx-sender)))
+      (match referrer
+        ref (let ((reward (/ (* total-cost (var-get referral-reward-percentage)) u10000)))
+              (map-set referral-rewards ref (+ (default-to u0 (map-get? referral-rewards ref)) reward)))
+        true
+      )
+    )
+
     (try! (nft-mint? ai-model-license license-id tx-sender))
     
     (map-set model-licenses license-id
@@ -667,6 +675,11 @@
   principal
 )
 
+(define-map referral-rewards
+  principal
+  uint
+)
+
 (define-public (set-referrer (referrer principal))
   (begin
     (asserts! (not (is-eq tx-sender referrer)) ERR-INVALID-AMOUNT)
@@ -791,4 +804,17 @@
 
 (define-read-only (get-license-version (license-id uint))
   (map-get? license-versions license-id)
+)
+
+(define-public (claim-referral-rewards)
+  (let ((rewards (default-to u0 (map-get? referral-rewards tx-sender))))
+    (asserts! (> rewards u0) ERR-INSUFFICIENT-FUNDS)
+    (map-set user-balances tx-sender (+ (default-to u0 (map-get? user-balances tx-sender)) rewards))
+    (map-delete referral-rewards tx-sender)
+    (ok rewards)
+  )
+)
+
+(define-read-only (get-referral-rewards (user principal))
+  (default-to u0 (map-get? referral-rewards user))
 )

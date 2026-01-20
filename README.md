@@ -10,6 +10,7 @@ A blockchain-powered platform for publishing, licensing, and monetizing AI/ML mo
 - **🗳️ DAO Governance**: Decentralized quality control
 - **⭐ User Feedback System**: Rate and review AI models
 - **🔄 Model Versioning**: Register new model versions and upgrade licenses seamlessly
+- **💰 Referral Rewards**: Earn commissions from user referrals
 
 ## 📋 Core Functions
 
@@ -27,6 +28,8 @@ A blockchain-powered platform for publishing, licensing, and monetizing AI/ML mo
 - `deposit-funds` - 💳 Add STX to marketplace balance
 - `withdraw-funds` - 💸 Withdraw earnings
 - `get-user-balance` - 💰 Check account balance
+- `claim-referral-rewards` - 💰 Claim earned referral rewards
+- `get-referral-rewards` - 💰 Check referral reward balance
 
 ### Quality Control
 - `audit-model` - 🔍 Submit model audit
@@ -107,6 +110,11 @@ clarinet deploy --testnet
 )
 ```
 
+### 10. Claim Referral Rewards
+```clarity
+(contract-call? .daiaaS-marketplace claim-referral-rewards)
+```
+
 ## 💡 Contract Architecture
 
 ### Data Structures
@@ -116,9 +124,11 @@ clarinet deploy --testnet
 - **Balances**: STX holdings for users
 - **Votes**: DAO governance participation
 - **Feedback**: User ratings and reviews for models
+- **Referral Rewards**: Accumulated commissions for referrers
 
 ### Key Variables
 - `platform-fee`: 2.5% platform commission
+- `referral-reward-percentage`: 5% referral commission
 - `last-model-id`: Auto-incrementing model counter
 - `last-license-id`: Auto-incrementing license counter
 
